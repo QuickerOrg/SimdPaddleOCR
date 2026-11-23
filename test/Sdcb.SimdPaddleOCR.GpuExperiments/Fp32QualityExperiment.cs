@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
+using Sdcb.SimdOnnx.Backends.Vulkan;
 using Sdcb.SimdPaddleOCR;
 using SkiaSharp;
 
@@ -16,6 +17,11 @@ internal static class Fp32QualityExperiment
         Environment.SetEnvironmentVariable("SIMD_OCR_EXPERIMENT_COMPACT_KERNEL",mode);
         Environment.SetEnvironmentVariable("SIMD_OCR_EXPERIMENT_SINGLE_WAVE","1");
         Environment.SetEnvironmentVariable("SIMD_OCR_EXPERIMENT_CPU_SEEDED_T25","0");
+        string? expectedGpu=Environment.GetEnvironmentVariable("SIMD_OCR_EXPECTED_GPU_NAME");
+        string actualGpu=VkBackend.Default.DeviceName;
+        if(expectedGpu is not null&&!string.Equals(expectedGpu,actualGpu,StringComparison.Ordinal))
+            throw new InvalidOperationException($"Unexpected GPU: expected {expectedGpu}, got {actualGpu}");
+        Console.WriteLine("Quality GPU: "+actualGpu);
         using var ocr=PaddleOcrAll.Load(Path.Combine(models,"det.onnx"),Path.Combine(models,"cls.onnx"),Path.Combine(models,"rec.onnx"),Path.Combine(models,"ppocrv6_dict.txt"),new PaddleOcrOptions{
             Detector=new(){Backend=OcrBackend.Vulkan},Classifier=new(){Backend=OcrBackend.Vulkan},Recognizer=new(){Backend=OcrBackend.Vulkan},LineWorkerCount=2,DetIntraOpThreads=4});
         var cases=JsonSerializer.Deserialize<Case[]>(File.ReadAllText(args[2]),new JsonSerializerOptions{PropertyNameCaseInsensitive=true})!;
