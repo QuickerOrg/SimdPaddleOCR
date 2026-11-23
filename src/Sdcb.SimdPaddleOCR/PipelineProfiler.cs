@@ -36,7 +36,9 @@ internal static class PipelineProfiler
     internal const int RecReshape = 19;     // per-line REC: session.Reshape
     internal const int DetUnclip = 20;      // nested in det_postprocess: convex outward offset
     internal const int RecProjection = 21; // nested CPU vocab projection + argmax
-    internal const int StageCount = 22;
+    internal const int DocumentPreprocess = 22; // document orientation: resize + center crop + normalize
+    internal const int DocumentGraph = 23;      // document orientation: four-class graph
+    internal const int StageCount = 24;
 
     internal static readonly string[] StageNames =
     [
@@ -45,7 +47,7 @@ internal static class PipelineProfiler
         "rec_postprocess", "lines_wall",
         "crop_setup", "rec_acquire", "cls_acquire", "rec_decode",
         "rec_release", "cls_release", "rec_cache_get", "rec_rent", "rec_pool",
-        "rec_reshape", "det_unclip", "rec_projection"
+        "rec_reshape", "det_unclip", "rec_projection", "document_preprocess", "document_graph"
     ];
 
     private static bool s_enabled;

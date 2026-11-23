@@ -3,7 +3,7 @@
 [中文](README.md) | **English**
 
 Pure C# PP-OCRv6 inference library: cross-platform hand-written kernels and GEMM, very high performance, low memory requirements, and very high accuracy.
-Inference runs on [Sdcb.SimdOnnx](https://github.com/sdcb/SimdOnnx), a pure C# engine shared with SimdGcdrNet; there is no dependency on Paddle Inference, ONNX Runtime, or OpenCV native libraries.
+Inference runs on [SimdOnnx](https://github.com/sdcb/SimdOnnx), a pure C# engine shared with SimdGcdrNet. Its source (a git submodule) compiles into this library with every engine type internal, so there is no separate engine package; there is no dependency on Paddle Inference, ONNX Runtime, or OpenCV native libraries.
 GPU support: Vulkan and Metal (macOS), .NET 10 only — still pure C#, with no bundled native binaries.
 
 The core API accepts interleaved pixels (BGR24 by default; RGB24 / BGRA32 / RGBA32 are also first-class). It does not decode images, so SimdCodecs, SkiaSharp, or OpenCvSharp are not required.
@@ -184,6 +184,26 @@ foreach (PaddleOcrLine line in result.Lines)
 
 Character boxes are estimated from CTC alignment (gaps are split at the midpoint), good enough for per-character overlays and redaction. The default is `false`, so you pay nothing unless you ask for it.
 
+## Page orientation (0°/90°/180°/270°)
+
+When a scan or photo is turned by 90°/180°/270°, detect the orientation and turn the page upright before OCR. The orientation model (PP-LCNet_x1_0_doc_ori) lives in the separate [SimdPaddleOCR.Models](https://github.com/sdcb/SimdPaddleOCR.Models) repository and ships as the `Sdcb.SimdPaddleOCR.Models.DocumentOrientation` package, which only hands out the model `Stream`:
+
+```csharp
+using Sdcb.SimdPaddleOCR.Models.DocumentOrientation;
+
+using var orientation = new PaddleOcrDocumentOrientationClassifier(DocumentOrientationModel.OpenRead());
+PaddleOcrDocumentOrientationResult o = orientation.Classify(bgr, width, height);   // o.OrientationDegrees: how far the page is turned clockwise
+
+(int w, int h) = PaddleOcrDocumentRotation.RotatedSize(width, height, o.OrientationDegrees);
+byte[] upright = new byte[w * h * 3];
+PaddleOcrDocumentRotation.Rotate(bgr, width, height, 0, ImagePixelFormat.Bgr24, o.OrientationDegrees, upright);
+PaddleOcrResult result = ocr.Run(upright, w, h);
+
+// map back to source-image coordinates if needed (text, scores and CTC alignment are kept)
+PaddleOcrLine[] lines = [.. result.Lines.Select(l => PaddleOcrDocumentRotation.ToSource(l, width, height, o.OrientationDegrees))];
+```
+
+It is a separate step, not part of `PaddleOcrAll`; a 500×500 image takes about 3 ms on the CPU. Thanks to [@hnlyf168](https://github.com/hnlyf168) for the implementation in [#32](https://github.com/sdcb/SimdPaddleOCR/pull/32).
 ## Examples
 
 All four samples share `examples/sample.jpg`. Each sample decodes the image into interleaved pixels (BGR / RGB / BGRA / RGBA are all accepted):
@@ -285,7 +305,7 @@ Under WebAssembly (`browser-wasm`, multi-threaded + LLVM AOT + WASM SIMD128 `Pac
 
 > After moving to the shared Sdcb.SimdOnnx engine (0.1.0-preview.7), an interleaved A/B against the 2.0 in-tree engine on a Ryzen 7 5800X + RTX 3080 Ti: CPU is at parity or faster everywhere (small 15–24% faster, medium 1–14%, tiny 4%); Vulkan is at parity or faster everywhere (tiny 12–17% faster, small 3–9%, medium at parity); accuracy is at parity. Peak memory: lower on Vulkan (medium 1009 → 925 MB), 2–7% higher on CPU. Details: [SimdOnnx docs/perf.md](https://github.com/sdcb/SimdOnnx/blob/main/docs/perf.md).
 
-Full benchmarks, accuracy tables, and reproduction commands per device: [`docs/perf.md`](docs/perf.md) and the per-machine reports under `docs/` (`vulkan-*.md`, `metal-m4.md`, `wasm.md`).
+Benchmarks, accuracy tables, and reproduction commands per device: the per-machine reports under `docs/` (`vulkan-*.md`, `metal-m4.md`, `wasm.md`). [`docs/perf.md`](docs/perf.md) has the same-machine A/B after the engine moved to embedded source.
 
 ## Reproducing performance
 

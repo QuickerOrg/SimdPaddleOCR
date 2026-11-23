@@ -3,7 +3,7 @@
 **中文** | [English](README_EN.md)
 
 纯 C# PP-OCRv6 推理库：多平台手写 Kernel / GEMM 等算子、超高性能、低内存需求、超高准确率。
-推理引擎为纯 C# 的 [Sdcb.SimdOnnx](https://github.com/sdcb/SimdOnnx)（与 SimdGcdrNet 共用），不依赖 Paddle Inference、ONNX Runtime 或 OpenCV 原生库。
+推理引擎为纯 C# 的 [SimdOnnx](https://github.com/sdcb/SimdOnnx)（与 SimdGcdrNet 共用），以源码形式（git submodule）编译进本库，类型全部 internal，不额外引入引擎包；不依赖 Paddle Inference、ONNX Runtime 或 OpenCV 原生库。
 GPU 支持 Vulkan 与 Metal（macOS），仅 .NET 10；同样纯 C#、不内嵌任何原生二进制。
 
 核心 API 接收交错像素内存（默认 BGR24，也可直接传 RGB24 / BGRA32 / RGBA32），不负责图片解码，因此不会强制引入 SimdCodecs、SkiaSharp 或 OpenCvSharp。
@@ -184,6 +184,26 @@ foreach (PaddleOcrLine line in result.Lines)
 
 字符框由 CTC 对齐估算（字符间空白按中点切），适合做按字覆盖、打码。默认 `false`，不需要就不付这部分开销。
 
+## 整页方向校正（0°/90°/180°/270°）
+
+扫描件或照片整页转了 90°/180°/270° 时，可以在 OCR 之前先识别方向、把页面转正。方向模型（PP-LCNet_x1_0_doc_ori）在独立的 [SimdPaddleOCR.Models](https://github.com/sdcb/SimdPaddleOCR.Models) 仓库，以 `Sdcb.SimdPaddleOCR.Models.DocumentOrientation` 包发布，只提供模型的 `Stream`：
+
+```csharp
+using Sdcb.SimdPaddleOCR.Models.DocumentOrientation;
+
+using var orientation = new PaddleOcrDocumentOrientationClassifier(DocumentOrientationModel.OpenRead());
+PaddleOcrDocumentOrientationResult o = orientation.Classify(bgr, width, height);   // o.OrientationDegrees：页面顺时针转了多少度
+
+(int w, int h) = PaddleOcrDocumentRotation.RotatedSize(width, height, o.OrientationDegrees);
+byte[] upright = new byte[w * h * 3];
+PaddleOcrDocumentRotation.Rotate(bgr, width, height, 0, ImagePixelFormat.Bgr24, o.OrientationDegrees, upright);
+PaddleOcrResult result = ocr.Run(upright, w, h);
+
+// 需要原图坐标时再映射回去（文本、分数、CTC 对齐不变）
+PaddleOcrLine[] lines = [.. result.Lines.Select(l => PaddleOcrDocumentRotation.ToSource(l, width, height, o.OrientationDegrees))];
+```
+
+它是独立的一步，不在 `PaddleOcrAll` 里；500×500 的图在 CPU 上约 3 ms。感谢 [@hnlyf168](https://github.com/hnlyf168) 在 [#32](https://github.com/sdcb/SimdPaddleOCR/pull/32) 中的实现。
 ## 示例
 
 四个示例共用 `examples/sample.jpg`，图片由示例负责解码为交错像素（BGR / RGB / BGRA / RGBA 均可）：
@@ -285,7 +305,7 @@ WebAssembly（`browser-wasm` 多线程 + LLVM AOT + WASM SIMD128 `PackedSimd` �
 
 > 切换到共享引擎 Sdcb.SimdOnnx（0.1.0-preview.7）后，在 Ryzen 7 5800X + RTX 3080 Ti 上与 2.0 原引擎同机交错 A/B：CPU 全部持平或更快（small 快 15–24%，medium 快 1–14%，tiny 快 4%）；Vulkan 也全部持平或更快（tiny 快 12–17%，small 快 3–9%，medium 持平）；精度持平。峰值内存：Vulkan 更低（medium 1009 → 925 MB），CPU 高 2–7%。详见 [SimdOnnx docs/perf.md](https://github.com/sdcb/SimdOnnx/blob/main/docs/perf.md)。
 
-每台设备的完整跑分、精度表和复现命令见 [`docs/perf.md`](docs/perf.md) 与 `docs/` 下各机型报告（`vulkan-*.md`、`metal-m4.md`、`wasm.md`）。
+各机型的跑分、精度表和复现命令见 `docs/` 下的报告（`vulkan-*.md`、`metal-m4.md`、`wasm.md`）；[`docs/perf.md`](docs/perf.md) 记录引擎改为源码内嵌后的同机 A/B。
 
 ## 性能复现
 
