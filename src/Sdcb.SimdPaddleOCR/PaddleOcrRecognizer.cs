@@ -436,6 +436,12 @@ public sealed class PaddleOcrRecognizer : IDisposable
             float[] scores = PooledArrays.Rent<float>(totalRows);
             try
             {
+#if NET10_0_OR_GREATER
+                bool compactGpu = Experimental.GpuCompactHead.Enabled && session is OnnxSharp.GpuOcrSession;
+#else
+                const bool compactGpu = false;
+#endif
+                int outputInner = compactGpu ? 6 : head.Inner;
                 // Batches of units arrive while later ones still run on the
                 // GPU; each batch's activations are back to back, so one
                 // ArgMax call covers it (same per-row kernel as a per-unit call).
@@ -443,12 +449,24 @@ public sealed class PaddleOcrRecognizer : IDisposable
                 {
                     int r0 = rowStart[first], r1 = rowStart[first + count];
                     for (int u = first; u < first + count; u++)
-                        if (offsets[u] != rowStart[u] * head.Inner)
+                        if (offsets[u] != rowStart[u] * outputInner)
                             throw new InvalidOperationException("REC activations are not contiguous.");
-                    if (!head.Projection.ArgMaxUnits(acts.AsSpan(r0 * head.Inner, (r1 - r0) * head.Inner),
+#if NET10_0_OR_GREATER
+                    if (compactGpu)
+                    {
+                        Experimental.GpuCompactHead.Unpack(acts.AsSpan(r0 * 6, (r1 - r0) * 6),
+                            indices.AsSpan(r0, r1 - r0), scores.AsSpan(r0, r1 - r0));
+                    }
+                    else
+#endif
+                    {
+                        long projectionStarted = profile ? PipelineProfiler.Now() : 0;
+                        bool projected = head.Projection.ArgMaxUnits(acts.AsSpan(r0 * head.Inner, (r1 - r0) * head.Inner),
                             batches.AsSpan(first, count), rows.AsSpan(first, count),
-                            indices.AsSpan(r0, r1 - r0), scores.AsSpan(r0, r1 - r0), intraOpThreads))
-                        return false;
+                            indices.AsSpan(r0, r1 - r0), scores.AsSpan(r0, r1 - r0), intraOpThreads);
+                        if (profile) PipelineProfiler.Add(PipelineProfiler.RecProjection, projectionStarted);
+                        if (!projected) return false;
+                    }
                     for (int u = first; u < first + count; u++)
                     {
                         int T = rows[u];
@@ -463,7 +481,11 @@ public sealed class PaddleOcrRecognizer : IDisposable
                 }
                 // false: GPU fell back or ArgMax declined — the caller's
                 // per-unit path rewrites every result
+#if NET10_0_OR_GREATER
+                bool ok = compactGpu ? ((OnnxSharp.GpuOcrSession)session).TryRunManyCompact(Ready) : batched.TryRunManyUntilCtcProjection(Ready);
+#else
                 bool ok = batched.TryRunManyUntilCtcProjection(Ready);
+#endif
                 if (profile) PipelineProfiler.Add(PipelineProfiler.RecGraph, started);
                 return ok;
             }
@@ -499,15 +521,24 @@ public sealed class PaddleOcrRecognizer : IDisposable
     /// </summary>
     private CtcDecodeInput RunCtcGraph(IOcrSession session, ReadOnlySpan<float> input)
     {
+#if NET10_0_OR_GREATER
+        if (Experimental.GpuCompactHead.Enabled && session is OnnxSharp.GpuOcrSession gpu
+            && gpu.TryRunCompactCtc(input, out var compactIndices, out var compactScores, out int compactCount))
+            return CtcDecodeInput.Compact(compactIndices, compactScores, compactCount);
+#endif
         if (session.TryRunUntilCtcProjection(input, out CtcProjectionOperands ops))
         {
             int rowCount = ops.RowCount;
             int[] indices = PooledArrays.Rent<int>(rowCount);
             float[] scores = PooledArrays.Rent<float>(rowCount);
             long matMulStarted = session.IsProfilingEnabled ? Stopwatch.GetTimestamp() : 0;
-            if (ops.Projection.IsFused && ops.Activations.Length == rowCount * ops.Inner
+            bool profileProjection = PipelineProfiler.Enabled;
+            long projectionStarted = profileProjection ? PipelineProfiler.Now() : 0;
+            bool projected = ops.Projection.IsFused && ops.Activations.Length == rowCount * ops.Inner
                 && ops.Projection.ArgMax(ops.Activations, ops.Batch, ops.Rows,
-                indices.AsSpan(0, rowCount), scores.AsSpan(0, rowCount), session.IntraOpThreads))
+                    indices.AsSpan(0, rowCount), scores.AsSpan(0, rowCount), session.IntraOpThreads);
+            if (profileProjection) PipelineProfiler.Add(PipelineProfiler.RecProjection, projectionStarted);
+            if (projected)
             {
                 if (matMulStarted != 0)
                     session.NoteProfile("MatMul", matMulStarted);

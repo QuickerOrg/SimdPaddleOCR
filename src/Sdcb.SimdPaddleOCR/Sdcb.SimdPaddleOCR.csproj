@@ -39,6 +39,9 @@
     <Compile Remove="**/*PackedSimd.cs" />
     <Compile Remove="Kernels/Conv1x1.Int8Vnni.cs" />
   </ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <EmbeddedResource Include="Experimental/Shaders/*.spv" />
+  </ItemGroup>
   <ItemGroup>
     <Using Include="Sdcb.SimdPaddleOCR" />
   </ItemGroup>

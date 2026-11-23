@@ -2,6 +2,7 @@
 using Sdcb.SimdOnnx.Backends.Metal;
 using Sdcb.SimdOnnx.Backends.Vulkan;
 using Sdcb.SimdOnnx.Engine;
+using Sdcb.SimdPaddleOCR.Experimental;
 
 namespace Sdcb.SimdPaddleOCR.OnnxSharp;
 
@@ -14,7 +15,7 @@ namespace Sdcb.SimdPaddleOCR.OnnxSharp;
 /// </summary>
 internal sealed class GpuOcrSession : IOcrSession, IBatchedCtcSession
 {
-    private enum Kind { Full, Ctc, Logits }
+    private enum Kind { Full, Ctc, Logits, Compact }
 
     /// <summary>One compiled shape + output variant on the device.</summary>
     private interface IExec : IDisposable
@@ -91,7 +92,7 @@ internal sealed class GpuOcrSession : IOcrSession, IBatchedCtcSession
             // staging buffer (medium Vulkan, 4 workers: +40 MB peak working set).
             if (Cached(Kind.Full) is { } full) return new(full.OutputShape);
             if (_compiled.ResolveHead(_shape) is { } head)
-                foreach (Kind k in (ReadOnlySpan<Kind>)[Kind.Ctc, Kind.Logits])
+                foreach (Kind k in (ReadOnlySpan<Kind>)[Kind.Ctc, Kind.Logits, Kind.Compact])
                     if (Cached(k) is { } e)
                     {
                         int[] a = e.OutputShape;
@@ -144,6 +145,22 @@ internal sealed class GpuOcrSession : IOcrSession, IBatchedCtcSession
         catch (Exception ex) { return Fallback(ex).RunInternal(input); }
     }
 
+    internal bool TryRunCompactCtc(ReadOnlySpan<float> input, out int[] indices, out float[] scores, out int count)
+    {
+        indices = []; scores = []; count = 0;
+        if (_cpu is not null || _metal) return false;
+        IExec exec;
+        try { exec = Run(Kind.Compact, input); }
+        catch (Exception ex) { Fallback(ex); return false; }
+        var packed = exec.Output;
+        if (packed.Length % 6 != 0) throw new InvalidOperationException("Invalid compact CTC output.");
+        count = packed.Length / 6;
+        indices = PooledArrays.Rent<int>(count);
+        scores = PooledArrays.Rent<float>(count);
+        GpuCompactHead.Unpack(packed, indices.AsSpan(0, count), scores.AsSpan(0, count));
+        return true;
+    }
+
     public bool TryRunUntilCtcProjection(ReadOnlySpan<float> input, out CtcProjectionOperands operands)
     {
         if (_cpu is not null) return _cpu.TryRunUntilCtcProjection(input, out operands);
@@ -188,7 +205,7 @@ internal sealed class GpuOcrSession : IOcrSession, IBatchedCtcSession
         _units = [.. shapes.Select(x => x.ToArray())];
         if (_unitInput.Length < total) _unitInput = new float[checked((int)total)];
         if (_units.Length != 0 && _compiled.ResolveHead(_units[0]) is not null)
-            Warm(_units, Kind.Ctc);
+            Warm(_units, GpuCompactHead.Enabled ? Kind.Compact : Kind.Ctc);
         return _unitInput.AsSpan(0, (int)total);
     }
 
@@ -319,9 +336,11 @@ internal sealed class GpuOcrSession : IOcrSession, IBatchedCtcSession
         return deviceOk && ok;
     }
 
-    private bool RunManyVulkan(CtcUnitsReady onReady)
+    internal bool TryRunManyCompact(CtcUnitsReady onReady) => !_metal && _cpu is null && RunManyVulkan(onReady, true);
+
+    private bool RunManyVulkan(CtcUnitsReady onReady, bool compact = false)
     {
-        int n = _units.Length, inner = _ctcHead!.Inner;
+        int n = _units.Length;
         if (n == 0) return true;
         int[] offsets = new int[n], actLen = new int[n];
         long[] inOff = new long[n + 1];
@@ -346,14 +365,16 @@ internal sealed class GpuOcrSession : IOcrSession, IBatchedCtcSession
                 long v = 1;
                 foreach (int d in _units[u]) v *= d;
                 inOff[u + 1] = inOff[u] + v;
-                runner.Add(_compiled.Model.Onnx, _units[u], OptionsFor(Kind.Ctc, _units[u]));
+                int inner = compact ? 6 : _ctcHead!.Inner;
+                runner.Add(_compiled.Model.Onnx, _units[u], OptionsFor(compact ? Kind.Compact : Kind.Ctc, _units[u]));
                 long o = 1;
                 foreach (int d in runner.OutputShape(u)) o *= d;
                 if (o % inner != 0) return false;
                 actLen[u] = (int)o;
                 offsets[u] = total;
                 total = checked(total + (int)o);
-                if (u + 1 == cut1 || u + 1 == cut2) runner.EndWave();
+                if (!(compact && GpuCompactHead.SingleWave) && (u + 1 == cut1 || u + 1 == cut2))
+                    runner.EndWave();
             }
             for (int u = 0; u < n; u++)
                 _unitInput.AsSpan((int)inOff[u], (int)(inOff[u + 1] - inOff[u])).CopyTo(runner.Input(u));
@@ -481,6 +502,7 @@ internal sealed class GpuOcrSession : IOcrSession, IBatchedCtcSession
     {
         // vec4 maxpool / depthwise on every device, as the pre-engine OCR backend ran them
         Vec4Eltwise = true,
+        Extensions = kind == Kind.Compact ? GpuCompactHead.Extensions : null,
         OutputName = kind switch
         {
             Kind.Ctc => _compiled.ResolveHead(shape)?.ActivationName,
