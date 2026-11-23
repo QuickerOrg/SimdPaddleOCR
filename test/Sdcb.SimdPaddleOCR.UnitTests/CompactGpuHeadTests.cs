@@ -104,7 +104,11 @@ public class CompactGpuHeadTests
             int expected = 0;
             for (int c = 1; c < columns; c++) if (values[c] > values[expected]) expected = c;
             Assert.Equal(expected, ids[row]);
-            Assert.Equal(values[expected], scores[row]);
+            double denominator = 0;
+            for (int c = 0; c < columns; c++) denominator += Math.Exp(values[c] - values[expected]);
+            float probability = (float)(1.0 / denominator);
+            Assert.InRange(scores[row], 0f, 1f);
+            Assert.InRange(MathF.Abs(probability - scores[row]), 0f, 5e-6f);
         }
     }
 }
