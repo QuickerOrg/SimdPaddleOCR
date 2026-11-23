@@ -17,6 +17,8 @@ internal static class GpuCompactHead
     {
         "subgroup" => Subgroup,
         "online" => Online,
+        "fp32" => GpuFp32Head.Fp32,
+        "fp16-control" => GpuFp32Head.Fp16Control,
         _ => Baseline,
     };
 

@@ -1,0 +1,35 @@
+// FP32 logits input; compact byte output retains the graph storage type.
+#version 450
+#ifdef F16
+#extension GL_EXT_shader_16bit_storage : require
+#define ET float16_t
+#else
+#define ET float
+#endif
+layout(local_size_x = 256) in;
+layout(set=0,binding=0) readonly buffer X { float x[]; };
+layout(set=0,binding=1) writeonly buffer O { ET o[]; };
+layout(push_constant) uniform PC { uint rows, columns; } p;
+shared float red[256];
+shared uint ids[256];
+void main() {
+ uint row=gl_WorkGroupID.x, t=gl_LocalInvocationID.x;
+ if(row>=p.rows)return;
+ float best=-3.402823466e38;uint id=0xffffffffu;
+ for(uint c=t;c<p.columns;c+=256u){float v=float(x[row*p.columns+c]);if(v>best || (v==best && c<id)){best=v;id=c;}}
+ red[t]=best;ids[t]=id;barrier();
+ for(uint s=128u;s>0u;s>>=1u){if(t<s){float b=red[t+s];uint j=ids[t+s];if(b>red[t] || (b==red[t] && j<ids[t])){red[t]=b;ids[t]=j;}}barrier();}
+ best=red[0];id=ids[0];
+ // Match the upstream fused CTC contract: winner softmax probability.
+ // Keep the denominator in fp32 even with fp16 activation storage.
+ barrier();
+ float sum=0.0;
+ for(uint c=t;c<p.columns;c+=256u)sum+=exp(float(x[row*p.columns+c])-best);
+ red[t]=sum;barrier();
+ for(uint s=128u;s>0u;s>>=1u){if(t<s)red[t]+=red[t+s];barrier();}
+ float probability=1.0/red[0];
+ if(t==0u){uint bits=floatBitsToUint(probability);uint b=row*6u;
+ // Byte lanes remain exact even when the graph stores activations as fp16.
+ o[b]=ET(id&255u);o[b+1u]=ET(id>>8u);
+ for(uint k=0u;k<4u;k++)o[b+2u+k]=ET((bits>>(8u*k))&255u);}
+}
