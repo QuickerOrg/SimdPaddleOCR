@@ -461,7 +461,7 @@ public sealed class PaddleOcrRecognizer : IDisposable
 #endif
                     {
                         long projectionStarted = profile ? PipelineProfiler.Now() : 0;
-                        bool projected = head.Projection.ArgMaxUnits(acts.AsSpan(r0 * head.Inner, (r1 - r0) * head.Inner),
+                        bool projected = Experimental.CpuSeededCtcHead.ArgMaxUnits(head.Projection, acts.AsSpan(r0 * head.Inner, (r1 - r0) * head.Inner),
                             batches.AsSpan(first, count), rows.AsSpan(first, count),
                             indices.AsSpan(r0, r1 - r0), scores.AsSpan(r0, r1 - r0), intraOpThreads);
                         if (profile) PipelineProfiler.Add(PipelineProfiler.RecProjection, projectionStarted);
@@ -535,7 +535,7 @@ public sealed class PaddleOcrRecognizer : IDisposable
             bool profileProjection = PipelineProfiler.Enabled;
             long projectionStarted = profileProjection ? PipelineProfiler.Now() : 0;
             bool projected = ops.Projection.IsFused && ops.Activations.Length == rowCount * ops.Inner
-                && ops.Projection.ArgMax(ops.Activations, ops.Batch, ops.Rows,
+                && Experimental.CpuSeededCtcHead.ArgMax(ops.Projection, ops.Activations, ops.Batch, ops.Rows,
                     indices.AsSpan(0, rowCount), scores.AsSpan(0, rowCount), session.IntraOpThreads);
             if (profileProjection) PipelineProfiler.Add(PipelineProfiler.RecProjection, projectionStarted);
             if (projected)

@@ -137,6 +137,9 @@ internal static class RealLogitsExperiment
         VerifyCounters();
         string models = args[1], output = args[3]; Directory.CreateDirectory(output);
         var cases = JsonSerializer.Deserialize<ImageCase[]>(File.ReadAllText(args[2]), Json)!;
+        bool validateSeeded=Environment.GetEnvironmentVariable("SIMD_OCR_DIAGNOSTIC_VALIDATE_SEEDED")=="1";
+        bool saveFeatures=Environment.GetEnvironmentVariable("SIMD_OCR_DIAGNOSTIC_SAVE_FEATURES")=="1";
+        var featureFiles=new List<object>();
         using var modelStream=File.OpenRead(Path.Combine(models,"rec.onnx"));
         using var model = Model.Load(modelStream);
         var backend = VkBackend.Default;
@@ -152,9 +155,18 @@ internal static class RealLogitsExperiment
         var overall = new Density(); var reports = new List<object>();
         foreach (var image in cases)
         {
+            Environment.SetEnvironmentVariable("SIMD_OCR_EXPERIMENT_CPU_SEEDED_T25","0");
             Environment.SetEnvironmentVariable("SIMD_OCR_EXPERIMENT_COMPACT_HEAD", "0");
             using var bitmap = SKBitmap.Decode(image.Path);
             PaddleOcrResult cpu = RunImage(ocrCpu, bitmap);
+            var seededChecks=new SeededChecks();
+            if(validateSeeded)
+            {
+                Environment.SetEnvironmentVariable("SIMD_OCR_EXPERIMENT_CPU_SEEDED_T25","1");
+                var seededPipeline=RunImage(ocrCpu,bitmap);
+                Environment.SetEnvironmentVariable("SIMD_OCR_EXPERIMENT_CPU_SEEDED_T25","0");
+                ComparePipeline(cpu,seededPipeline,seededChecks);
+            }
             PaddleOcrResult? gpu = null;
             if (image.FocusText is not null)
             {
@@ -180,6 +192,18 @@ internal static class RealLogitsExperiment
                 shapeHistogram[shapeKey]=shapeHistogram.GetValueOrDefault(shapeKey)+total;
                 int[] ids = new int[total]; float[] scores = new float[total];
                 if (!projection.ArgMax(features, members.Length, steps, ids, scores, 4)) throw new InvalidOperationException("Fused CPU head unavailable.");
+                int[] seededIds=new int[total];float[] seededScores=new float[total];
+                if(validateSeeded)
+                {
+                    if(!MatMul.TryArgMaxSeeded(features,p.Weights,p.Bias??[],seededIds,seededScores,members.Length,steps,p.Inner,p.Columns,projection.Packed,4))
+                        throw new InvalidOperationException("Seeded validation unexpectedly fell back.");
+                    seededChecks.Positions+=total;
+                }
+                if(saveFeatures)
+                {
+                    string name=$"features-{image.Id}-u{units:D3}.f32.gz";Dump(Path.Combine(output,name),features);
+                    featureFiles.Add(new{image=image.Id,file=name,batch=members.Length,steps,p.Inner,p.Columns,width,members});
+                }
                 float[] logits = Dense(features, p, members.Length, steps);
                 for (int b = 0; b < members.Length; b++)
                 {
@@ -194,6 +218,15 @@ internal static class RealLogitsExperiment
                         int winner = ArgMax(values); if (winner != ids[row]) throw new InvalidDataException("Dense logits differ from fused argmax.");
                         string kind = winner == 0 ? "blank" : winner == previous ? "repeat" : "emitted";
                         double reference=density.Add(values, winner, kind);
+                        if(validateSeeded)
+                        {
+                            if(seededIds[row]!=ids[row])seededChecks.ArgMaxMismatches++;
+                            float candidate=seededScores[row];if(!float.IsFinite(candidate)||candidate<0||candidate>1)throw new InvalidDataException("Invalid seeded probability.");
+                            seededChecks.CandidateVsOriginal=Math.Max(seededChecks.CandidateVsOriginal,Math.Abs(candidate-scores[row]));
+                            seededChecks.CandidateVsDouble=Math.Max(seededChecks.CandidateVsDouble,Math.Abs(candidate-reference));
+                            seededChecks.OriginalVsDouble=Math.Max(seededChecks.OriginalVsDouble,Math.Abs(scores[row]-reference));
+                            seededChecks.ByKind[kind]=Math.Max(seededChecks.ByKind.GetValueOrDefault(kind),Math.Abs(candidate-reference));
+                        }
                         double delta=Math.Abs(reference-scores[row]);
                         if(delta>denseScoreDeltaByKind.GetValueOrDefault(kind))
                         {
@@ -218,13 +251,52 @@ internal static class RealLogitsExperiment
             }
             var report = new { image.Id, image.Path, sha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(image.Path))),
                 model = "Small", p.Inner, p.Columns, maxBatch, units, lines = cpu.Lines.Length, replayMismatches = mismatches,
-                maxReplayScoreDelta,maxDenseVsFusedScoreDelta,maxDenseScoreExample,denseScoreDeltaByKind,denseScoreExamplesByKind,shapeHistogram, density = density.Report() };
+                maxReplayScoreDelta,maxDenseVsFusedScoreDelta,maxDenseScoreExample,denseScoreDeltaByKind,denseScoreExamplesByKind,shapeHistogram,
+                seededChecks=validateSeeded?seededChecks:null, density = density.Report() };
             overall.Merge(density);reports.Add(report); Write(Path.Combine(output, image.Id + ".json"), report);
             Console.WriteLine($"{image.Id}: {cpu.Lines.Length} lines, {density.Positions} positions, replay mismatches={mismatches}");
             if (mismatches != 0) throw new InvalidDataException("Reconstructed recognition unit did not reproduce pipeline.");
+            if(seededChecks.ArgMaxMismatches!=0||seededChecks.StructuralMismatches!=0)throw new InvalidDataException("Seeded correctness failed.");
         }
+        if(saveFeatures)Write(Path.Combine(output,"features-manifest.json"),featureFiles);
         Write(Path.Combine(output, "summary.json"), new { backend.DeviceName, p.Inner, p.Columns, overall = overall.Report(), images = reports });
         return 0;
+    }
+
+    private sealed class SeededChecks
+    {
+        public long Positions{get;set;}
+        public int ArgMaxMismatches{get;set;}
+        public int StructuralMismatches{get;set;}
+        public int LineThresholdCrossings{get;set;}
+        public double CandidateVsOriginal{get;set;}
+        public double CandidateVsDouble{get;set;}
+        public double OriginalVsDouble{get;set;}
+        public double MaxLineScoreDelta{get;set;}
+        public double MaxTokenScoreDelta{get;set;}
+        public Dictionary<string,double> ByKind{get;}=[];
+    }
+    private static void ComparePipeline(PaddleOcrResult original,PaddleOcrResult candidate,SeededChecks check)
+    {
+        if(original.Lines.Length!=candidate.Lines.Length){check.StructuralMismatches++;return;}
+        for(int i=0;i<original.Lines.Length;i++)
+        {
+            var a=original.Lines[i];var b=candidate.Lines[i];
+            if(a.Text!=b.Text||a.Box!=b.Box||a.AppliedRotationDegrees!=b.AppliedRotationDegrees||a.RecognitionContentWidth!=b.RecognitionContentWidth||a.RecognitionTensorWidth!=b.RecognitionTensorWidth)
+                check.StructuralMismatches++;
+            check.MaxLineScoreDelta=Math.Max(check.MaxLineScoreDelta,Math.Abs(a.RecognitionScore-b.RecognitionScore));
+            if((a.RecognitionScore>=.8f)!=(b.RecognitionScore>=.8f))check.LineThresholdCrossings++;
+            var x=a.CtcSpans!;var y=b.CtcSpans!;
+            if(x.Length!=y.Length){check.StructuralMismatches++;continue;}
+            for(int j=0;j<x.Length;j++)
+            {
+                if(x[j].Text!=y[j].Text||x[j].StartColumn!=y[j].StartColumn||x[j].EndColumn!=y[j].EndColumn)check.StructuralMismatches++;
+                check.MaxTokenScoreDelta=Math.Max(check.MaxTokenScoreDelta,Math.Abs(x[j].Score-y[j].Score));
+            }
+            var ca=a.EstimateCharacterBoxes();var cb=b.EstimateCharacterBoxes();
+            if(ca.Length!=cb.Length){check.StructuralMismatches++;continue;}
+            for(int j=0;j<ca.Length;j++)if(ca[j].Text!=cb[j].Text||ca[j].X1!=cb[j].X1||ca[j].Y1!=cb[j].Y1||ca[j].X2!=cb[j].X2||ca[j].Y2!=cb[j].Y2||ca[j].X3!=cb[j].X3||ca[j].Y3!=cb[j].Y3||ca[j].X4!=cb[j].X4||ca[j].Y4!=cb[j].Y4)check.StructuralMismatches++;
+        }
     }
 
     // 只用于定位既有数值差异，照搬当前AVX2分母的更新顺序；没有替换任何生产计算。
