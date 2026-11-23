@@ -76,9 +76,13 @@ public class CompactGpuHeadTests
     }
 
     [Theory]
-    [InlineData(1, 128)]
-    [InlineData(2, 320)]
-    public void CompactShaderMatchesDenseGpuArgMax(int batch, int width)
+    [InlineData("baseline", 1, 128)]
+    [InlineData("baseline", 2, 320)]
+    [InlineData("subgroup", 1, 128)]
+    [InlineData("subgroup", 2, 320)]
+    [InlineData("online", 1, 128)]
+    [InlineData("online", 2, 320)]
+    public void CompactShaderMatchesDenseGpuArgMax(string kernel, int batch, int width)
     {
         VkBackend backend;
         try { backend = VkBackend.Default; }
@@ -89,7 +93,7 @@ public class CompactGpuHeadTests
         var head = ModelHeads.FindSoftmaxHead(model.Onnx, shape, OnnxSharp.CompiledModel.Options)!;
         var options = OnnxSharp.CompiledModel.Options with { Vec4Eltwise = true };
         using var dense = backend.NewSession(model.Onnx, shape, options with { OutputName = head.LogitsName });
-        using var compact = backend.NewSession(model.Onnx, shape, options with { Extensions = GpuCompactHead.Extensions });
+        using var compact = backend.NewSession(model.Onnx, shape, options with { Extensions = GpuCompactHead.ForKernel(kernel) });
         float[] input = Enumerable.Range(0, batch * 3 * 48 * width).Select(i => MathF.Sin(i * .037f)).ToArray();
         input.CopyTo(dense.Input); dense.Run();
         input.CopyTo(compact.Input); compact.Run();

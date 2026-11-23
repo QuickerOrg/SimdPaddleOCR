@@ -6,6 +6,7 @@ using Sdcb.SimdPaddleOCR;
 using SkiaSharp;
 
 if(args.Length==3 && args[0]=="--gpu-profile") return GpuTimingExperiment.Run(args);
+if(args.Length==3 && args[0]=="--cpu-head-profile") return CpuHeadTimingExperiment.Run(args);
 
 if(args.Length==4 && args[0]=="--corpus") return CorpusExperiment.Run(args);
 

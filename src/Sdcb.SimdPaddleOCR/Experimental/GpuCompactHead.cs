@@ -9,7 +9,16 @@ internal static class GpuCompactHead
 {
     internal static bool Enabled => Environment.GetEnvironmentVariable("SIMD_OCR_EXPERIMENT_COMPACT_HEAD") == "1";
     internal static bool SingleWave => Environment.GetEnvironmentVariable("SIMD_OCR_EXPERIMENT_SINGLE_WAVE") == "1";
-    internal static readonly EngineExtensions Extensions = new EngineExtensions().Add(new CompactPass());
+    private static readonly EngineExtensions Baseline = new EngineExtensions().Add(new CompactPass("ctc_compact"));
+    private static readonly EngineExtensions Subgroup = new EngineExtensions().Add(new CompactPass("ctc_compact_subgroup"));
+    private static readonly EngineExtensions Online = new EngineExtensions().Add(new CompactPass("ctc_compact_online"));
+    internal static EngineExtensions Extensions => ForKernel(Environment.GetEnvironmentVariable("SIMD_OCR_EXPERIMENT_COMPACT_KERNEL"));
+    internal static EngineExtensions ForKernel(string? kernel) => kernel switch
+    {
+        "subgroup" => Subgroup,
+        "online" => Online,
+        _ => Baseline,
+    };
 
     internal static void Unpack(ReadOnlySpan<float> packed, Span<int> indices, Span<float> scores)
     {
@@ -25,7 +34,7 @@ internal static class GpuCompactHead
         }
     }
 
-    private sealed class CompactPass : GraphPass
+    private sealed class CompactPass(string shader) : GraphPass
     {
         public override PassStage Stage => PassStage.Physical;
 
@@ -47,7 +56,7 @@ internal static class GpuCompactHead
             context.Nodes[at] = new ExecNode
             {
                 Op = ExecOp.Ext, Ext = CompactOp.Instance, In = node.In, Out = node.Out,
-                P = (rows, columns), Name = "experimental-compact-ctc",
+                P = (rows, columns, shader), Name = "experimental-compact-ctc",
             };
         }
     }
@@ -60,8 +69,8 @@ internal static class GpuCompactHead
 
         public override IEnumerable<VkDispatch> EmitVulkan(VkGraphModel graph, ExecNode node)
         {
-            var (rows, columns) = ((int, int))node.P!;
-            yield return graph.Dispatch(node, "ctc_compact", [graph.Bind(node.In[0]), graph.Bind(node.Out[0])],
+            var (rows, columns, shader) = ((int, int, string))node.P!;
+            yield return graph.Dispatch(node, shader, [graph.Bind(node.In[0]), graph.Bind(node.Out[0])],
                 VkGraphModel.PcOfF([(uint)rows, (uint)columns]), (uint)rows, owner: typeof(GpuCompactHead).Assembly);
         }
     }

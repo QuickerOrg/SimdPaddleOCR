@@ -1,0 +1,45 @@
+#version 450
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#ifdef F16
+#extension GL_EXT_shader_16bit_storage : require
+#define ET float16_t
+#else
+#define ET float
+#endif
+layout(local_size_x = 256) in;
+layout(set=0,binding=0) readonly buffer X { ET x[]; };
+layout(set=0,binding=1) writeonly buffer O { ET o[]; };
+layout(push_constant) uniform PC { uint rows, columns; } p;
+shared float red[256];
+shared uint ids[256];
+void main() {
+ uint row=gl_WorkGroupID.x, t=gl_LocalInvocationID.x;
+ if(row>=p.rows)return;
+ float best=-3.402823466e38;uint id=0xffffffffu;
+ for(uint c=t;c<p.columns;c+=256u){float v=float(x[row*p.columns+c]);if(v>best || (v==best && c<id)){best=v;id=c;}}
+ float groupMax=subgroupMax(best);
+ uint groupId=subgroupMin(best==groupMax?id:0xffffffffu);
+ if(subgroupElect()){red[gl_SubgroupID]=groupMax;ids[gl_SubgroupID]=groupId;}
+ barrier();
+ if(t==0u){
+  best=red[0];id=ids[0];
+  for(uint g=1u;g<gl_NumSubgroups;g++)if(red[g]>best || (red[g]==best && ids[g]<id)){best=red[g];id=ids[g];}
+  red[0]=best;ids[0]=id;
+ }
+ barrier();
+ best=red[0];id=ids[0];
+ float sum=0.0;
+ for(uint c=t;c<p.columns;c+=256u)sum+=exp(float(x[row*p.columns+c])-best);
+ // All invocations must finish reading red[0] before subgroup leaders reuse it.
+ barrier();
+ float groupSum=subgroupAdd(sum);
+ if(subgroupElect())red[gl_SubgroupID]=groupSum;
+ barrier();
+ if(t==0u){
+  sum=0.0;for(uint g=0u;g<gl_NumSubgroups;g++)sum+=red[g];
+  uint bits=floatBitsToUint(1.0/sum),b=row*6u;
+  o[b]=ET(id&255u);o[b+1u]=ET(id>>8u);
+  for(uint k=0u;k<4u;k++)o[b+2u+k]=ET((bits>>(8u*k))&255u);
+ }
+}
