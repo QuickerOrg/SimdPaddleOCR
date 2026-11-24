@@ -5,6 +5,7 @@ using System.Text.Json;
 using Sdcb.SimdPaddleOCR;
 using SkiaSharp;
 
+if(args.Length==6 && args[0]=="--http-corpus") return await HttpCorpusExperiment.Run(args);
 if(args.Length==5 && (args[0]=="--http-load" || args[0]=="--http-load-wire")) return await HttpLoadExperiment.Run(args);
 if(args.Length==2 && args[0]=="--resize-validate") return ExactResizeValidation.Run(args[1]);
 if(args.Length==2 && args[0]=="--gpu-resize-validate") return GpuExactResizeValidation.Run(args[1]);

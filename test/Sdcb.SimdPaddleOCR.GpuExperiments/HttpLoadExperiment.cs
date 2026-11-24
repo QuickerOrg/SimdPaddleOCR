@@ -76,7 +76,7 @@ internal static class HttpLoadExperiment
     // Hash the entire response except its two volatile numeric timing values.
     // This validates scores and character geometry too, without building a
     // second client's full DOM on the measured server's slower CPU.
-    private static string StableBodySignature(byte[] body)
+    internal static string StableBodySignature(byte[] body)
     {
         var ranges = new List<(int Start, int End)>();
         foreach (string marker in new[] { "\"decodeMs\":", "\"inferenceMs\":" })
