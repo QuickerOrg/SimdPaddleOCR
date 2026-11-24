@@ -140,14 +140,31 @@ public sealed class PaddleOcrDetector : IDisposable
             {
                 long started = s_profileEnabled ? Stopwatch.GetTimestamp() : 0;
                 long pipelineStarted = pipelineProfile ? PipelineProfiler.Now() : 0;
-                PPOCRPreprocess.Det(source, sourceWidth, sourceHeight, sourceStride,
-                    size.Width, size.Height, inputSpan, _intraOpThreads,
-                    session.InputIsNhwc, format);
-                if (s_profileEnabled) AddProfile(0, started);
-                if (pipelineProfile) PipelineProfiler.Add(PipelineProfiler.DetPreprocess, pipelineStarted);
-                started = s_profileEnabled ? Stopwatch.GetTimestamp() : 0;
-                pipelineStarted = pipelineProfile ? PipelineProfiler.Now() : 0;
-                ReadOnlySpan<float> probabilities = session.RunInternal(inputSpan);
+                ReadOnlySpan<float> probabilities = default;
+                bool fused = false;
+#if NET10_0_OR_GREATER
+                if (_options.Backend == OcrBackend.Vulkan && Experimental.GpuExactDetResize.FusedEnabled &&
+                    session is GpuOcrSession gpu && session.GpuAlive)
+                    fused = gpu.TryRunPreparedDet(source, sourceWidth, sourceHeight, sourceStride,
+                        size.Width, size.Height, format, out probabilities);
+#endif
+                if (!fused)
+                {
+                    bool prepared = false;
+#if NET10_0_OR_GREATER
+                    if (session.GpuAlive && _options.Backend == OcrBackend.Vulkan && Experimental.GpuExactDetResize.Enabled)
+                        prepared = PPOCRPreprocess.TryGpuDet(source, sourceWidth, sourceHeight, sourceStride,
+                            size.Width, size.Height, inputSpan, session.InputIsNhwc, format);
+#endif
+                    if (!prepared) PPOCRPreprocess.Det(source, sourceWidth, sourceHeight, sourceStride,
+                        size.Width, size.Height, inputSpan, _intraOpThreads,
+                        session.InputIsNhwc, format);
+                    if (s_profileEnabled) AddProfile(0, started);
+                    if (pipelineProfile) PipelineProfiler.Add(PipelineProfiler.DetPreprocess, pipelineStarted);
+                    started = s_profileEnabled ? Stopwatch.GetTimestamp() : 0;
+                    pipelineStarted = pipelineProfile ? PipelineProfiler.Now() : 0;
+                    probabilities = session.RunInternal(inputSpan);
+                }
                 if (s_profileEnabled) AddProfile(1, started);
                 if (pipelineProfile) PipelineProfiler.Add(PipelineProfiler.DetGraph, pipelineStarted);
                 started = s_profileEnabled ? Stopwatch.GetTimestamp() : 0;

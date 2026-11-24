@@ -6,10 +6,16 @@ namespace Sdcb.SimdPaddleOCR;
 
 internal static class PPOCRPreprocess
 {
+#if NET10_0_OR_GREATER
+    internal static bool TryGpuDet(ReadOnlySpan<byte> source, int width, int height, int stride,
+        int resizedWidth, int resizedHeight, Span<float> output, bool nhwc, ImagePixelFormat format) =>
+        Experimental.GpuExactDetResize.TryResize(source, width, height, stride, resizedWidth, resizedHeight,
+            output, DetNormalization, nhwc, format);
+#endif
     // PaddleOCR normalizes after cv2.resize on the 8-bit BGR image; the tables give the exact float
     // of every byte (one lookup per element instead of a divide / multiply in the hot loops).
     // DET: ImageNet (x/255 - mean) / std on B,G,R; REC / CLS: RecNorm (x/255 - 0.5) / 0.5.
-    private static readonly PixelNormalization DetNormalization =
+    internal static readonly PixelNormalization DetNormalization =
         PixelNormalization.MeanStd([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]);
     private static readonly PixelNormalization RecNormalization =
         PixelNormalization.FromFunction((_, value) => value * (2.0f / 255.0f) - 1.0f);
@@ -114,7 +120,7 @@ internal static class PPOCRPreprocess
         // cv2.resize INTER_LINEAR's observable 8-bit result (11-bit coefficients, x64 SIMD vertical
         // rounding), so threshold-boundary detector pixels agree with the reference; rows split
         // across the intra-op threads bit-identically
-        ImageTensor.ResizeLinear(source, sourceWidth, sourceHeight, sourceStride, (PixelFormat)format,
+        ExactImageResize.ResizeLinear(source, sourceWidth, sourceHeight, sourceStride, (PixelFormat)format,
             resizedWidth, resizedHeight, output, nhwc ? TensorLayout.Nhwc : TensorLayout.Nchw, DetNormalization,
             threads: intraOpThreads);
     }
@@ -157,7 +163,7 @@ internal static class PPOCRPreprocess
         int actualWidth = (int)Math.Min(width,
             ((long)height * windowWidth + sourceHeight - 1L) / sourceHeight);
         if (actualWidth < width) output.Fill(-1f);
-        ImageTensor.ResizeLinear(source, windowWidth, sourceHeight, sourceStride, (PixelFormat)format,
+        ExactImageResize.ResizeLinear(source, windowWidth, sourceHeight, sourceStride, (PixelFormat)format,
             actualWidth, height, output, nhwc ? TensorLayout.Nhwc : TensorLayout.Nchw, RecNormalization, tensorWidth: width);
         return actualWidth;
     }
@@ -180,7 +186,7 @@ internal static class PPOCRPreprocess
         int actualWidth = (int)Math.Min(targetWidth,
             ((long)height * sourceWidth + sourceHeight - 1L) / sourceHeight);
         output.Clear();
-        ImageTensor.ResizeLinear(source, sourceWidth, sourceHeight, sourceStride, (PixelFormat)format,
+        ExactImageResize.ResizeLinear(source, sourceWidth, sourceHeight, sourceStride, (PixelFormat)format,
             actualWidth, height, output, nhwc ? TensorLayout.Nhwc : TensorLayout.Nchw, RecNormalization, tensorWidth: targetWidth);
         return actualWidth;
     }

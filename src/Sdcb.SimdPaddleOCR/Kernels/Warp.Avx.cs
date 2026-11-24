@@ -62,6 +62,8 @@ internal static partial class Warp
         double x, double y, int xBase, int yBase, byte* destination, int destinationOffset,
         PixelAccess access)
     {
+        if (SeparableEnabled && TrySampleCubicSeparable(source, stride, x, y, xBase, yBase,
+            destination, destinationOffset, access)) return;
         Vector256<double> tx = Avx.Subtract(Vector256.Create(x),
             Vector256.Create((double)(xBase - 1), xBase, xBase + 1, xBase + 2));
         Vector256<double> ty = Avx.Subtract(Vector256.Create(y),

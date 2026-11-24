@@ -32,6 +32,7 @@ internal sealed class GpuOcrSession : IOcrSession, IBatchedCtcSession
 
     private sealed class VkExec(VkInferenceSession s) : IExec
     {
+        internal VkInferenceSession Session => s;
         public Span<float> Input => s.Input;
         public ReadOnlySpan<float> Output => s.Output;
         public int[] OutputShape => s.OutputShape;
@@ -69,7 +70,26 @@ internal sealed class GpuOcrSession : IOcrSession, IBatchedCtcSession
     private int[] _shape = [];
     private int _volume, _highWater, _threads;
     private CpuOcrSession? _cpu;
+    private float[] _imageOutput = [];
     private bool _disposed;
+
+    internal bool TryRunPreparedDet(ReadOnlySpan<byte> source, int width, int height, int stride,
+        int resizedWidth, int resizedHeight, ImagePixelFormat format, out ReadOnlySpan<float> output)
+    {
+        output = default;
+        if (_cpu is not null || _metal || !InputIsNhwc) return false;
+        try
+        {
+            if (Exec(Kind.Full) is not VkExec vk) return false;
+            int count = 1;
+            foreach (int d in vk.OutputShape) count = checked(count * d);
+            if (_imageOutput.Length < count) _imageOutput = new float[count];
+            if (!GpuExactDetResize.TryRunIntegrated(vk.Session, source, width, height, stride,
+                resizedWidth, resizedHeight, _imageOutput.AsSpan(0, count), PPOCRPreprocess.DetNormalization, format)) return false;
+            output = _imageOutput.AsSpan(0, count); return true;
+        }
+        catch (Exception error) { Fallback(error); return false; }
+    }
 
     internal GpuOcrSession(CompiledModel compiled, bool metal)
     {

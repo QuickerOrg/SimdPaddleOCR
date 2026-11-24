@@ -1,0 +1,21 @@
+#version 450
+layout(local_size_x=256) in;
+layout(set=0,binding=0,std430) readonly buffer Source { uint pixels[]; };
+layout(set=0,binding=1,std430) readonly buffer XCoefficients { ivec4 xc[]; };
+layout(set=0,binding=2,std430) readonly buffer YCoefficients { ivec4 yc[]; };
+layout(set=0,binding=3,std430) readonly buffer Normalization { float lut[]; };
+layout(set=0,binding=4,std430) writeonly buffer Output { float outputValues[]; };
+layout(push_constant) uniform Parameters { int width; int height; int stride; } pc;
+int byteAt(int address) { return int((pixels[uint(address)>>2] >> ((uint(address)&3u)*8u)) & 255u); }
+void main() {
+    uint index=gl_GlobalInvocationID.x;
+    if(index>=uint(pc.width*pc.height)) return;
+    int x=int(index)%pc.width, y=int(index)/pc.width;
+    ivec4 a=xc[x], b=yc[y];
+    for(int c=0;c<3;c++) {
+        int h0=byteAt(b.x*pc.stride+a.x*3+c)*a.z+byteAt(b.x*pc.stride+a.y*3+c)*a.w;
+        int h1=byteAt(b.y*pc.stride+a.x*3+c)*a.z+byteAt(b.y*pc.stride+a.y*3+c)*a.w;
+        int value=((((h0>>4)*b.z)>>16)+(((h1>>4)*b.w)>>16)+2)>>2;
+        outputValues[index*3u+uint(c)]=lut[c*256+clamp(value,0,255)];
+    }
+}
