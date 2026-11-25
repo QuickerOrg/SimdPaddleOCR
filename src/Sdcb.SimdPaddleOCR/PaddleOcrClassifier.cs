@@ -14,6 +14,7 @@ public sealed class PaddleOcrClassifier : IDisposable
     private const int InputWidth = 160, InputHeight = 80;
     private readonly CompiledModel _compiled;
     private readonly ConcurrentBag<IOcrSession> _sessions = [];
+    private readonly IdleSessionPool<IOcrSession>? _idleSessions;
     private readonly bool _ownsModel;
     private readonly bool _gpuCapable;
     private int _pooledCount;
@@ -51,6 +52,13 @@ public sealed class PaddleOcrClassifier : IDisposable
             _compiled.Dispose();
             if (ownsModel) model.Dispose();
             throw new ArgumentOutOfRangeException(nameof(options));
+        }
+        try { _idleSessions = IdleSessionPolicy.Create(_options.MaxPooledSessions, _options.SessionPool); }
+        catch
+        {
+            _compiled.Dispose();
+            if (ownsModel) model.Dispose();
+            throw;
         }
     }
 
@@ -203,6 +211,12 @@ public sealed class PaddleOcrClassifier : IDisposable
     private IOcrSession RentSession()
     {
         if (_disposed) throw new ObjectDisposedException(nameof(PaddleOcrClassifier));
+        if (_idleSessions is not null)
+        {
+            IOcrSession pooled = _idleSessions.Take() ?? OcrSessionFactory.Create(_compiled, _options.Backend);
+            pooled.PlanForCtcProjection = true;
+            return pooled;
+        }
         if (_sessions.TryTake(out IOcrSession? session))
         {
             Interlocked.Decrement(ref _pooledCount);
@@ -215,6 +229,7 @@ public sealed class PaddleOcrClassifier : IDisposable
 
     private void ReturnSession(IOcrSession session)
     {
+        if (_idleSessions is not null) { _idleSessions.Return(session); return; }
         if (_disposed)
         {
             session.Dispose();
@@ -236,6 +251,7 @@ public sealed class PaddleOcrClassifier : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        _idleSessions?.Dispose();
         while (_sessions.TryTake(out IOcrSession? session))
             session.Dispose();
         _compiled.Dispose();

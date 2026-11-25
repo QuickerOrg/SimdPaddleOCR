@@ -15,6 +15,7 @@ public sealed class PaddleOcrDetector : IDisposable
     private readonly int _intraOpThreads;
     private readonly CompiledModel _compiled;
     private readonly ConcurrentBag<IOcrSession> _sessions = [];
+    private readonly IdleSessionPool<IOcrSession>? _idleSessions;
     private readonly ConcurrentBag<DbPostprocess.Workspace> _postprocess = [];
     private readonly int _postprocessPixels;
     private readonly bool _ownsModel;
@@ -41,6 +42,7 @@ public sealed class PaddleOcrDetector : IDisposable
             _options = ResolveOptions(model, options);
             if (_options.MaxSessionCacheEntries < 0) throw new ArgumentOutOfRangeException(nameof(options));
             if (_options.MaxPooledSessions < 0) throw new ArgumentOutOfRangeException(nameof(options));
+            _idleSessions = IdleSessionPolicy.Create(_options.MaxPooledSessions, _options.SessionPool);
             _intraOpThreads = MathCompat.Clamp(intraOpThreads, 1, 16);
             // One shape-agnostic compiled model; pooled sessions are reshaped per image.
             _compiled = new CompiledModel(_model, _intraOpThreads, releaseInput: true);
@@ -54,6 +56,7 @@ public sealed class PaddleOcrDetector : IDisposable
         }
         catch
         {
+            _idleSessions?.Dispose();
             if (ownsModel) _model.Dispose();
             throw;
         }
@@ -76,6 +79,7 @@ public sealed class PaddleOcrDetector : IDisposable
         {
             MaxSessionCacheEntries = source.MaxSessionCacheEntries,
             MaxPooledSessions = source.MaxPooledSessions,
+            SessionPool = source.SessionPool,
             LimitSideLength = source.LimitSideLength,
             MaxCandidates = source.MaxCandidates,
             UseDilation = source.UseDilation,
@@ -197,6 +201,8 @@ public sealed class PaddleOcrDetector : IDisposable
     private IOcrSession RentSession()
     {
         if (_disposed) throw new ObjectDisposedException(nameof(PaddleOcrDetector));
+        if (_idleSessions is not null)
+            return _idleSessions.Take() ?? OnnxSharp.OcrSessionFactory.Create(_compiled, _options.Backend);
         if (_sessions.TryTake(out IOcrSession? session))
         {
             Interlocked.Decrement(ref _pooledCount);
@@ -207,6 +213,7 @@ public sealed class PaddleOcrDetector : IDisposable
 
     private void ReturnSession(IOcrSession session)
     {
+        if (_idleSessions is not null) { _idleSessions.Return(session); return; }
         if (_disposed)
         {
             session.Dispose();
@@ -263,6 +270,7 @@ public sealed class PaddleOcrDetector : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        _idleSessions?.Dispose();
         while (_sessions.TryTake(out IOcrSession? session))
             session.Dispose();
         _compiled.Dispose();

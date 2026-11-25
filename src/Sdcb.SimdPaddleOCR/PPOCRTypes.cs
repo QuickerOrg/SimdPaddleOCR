@@ -7,6 +7,8 @@ namespace Sdcb.SimdPaddleOCR;
 /// <summary>Options for the DB text detector.</summary>
 public sealed class PaddleOcrDetectorOptions
 {
+    /// <summary>Optional idle-session reclamation; null preserves the existing retention policy.</summary>
+    public OcrSessionPoolPolicy? SessionPool { get; init; }
     // Ignored: the detector keeps one shape-agnostic CompiledModel and pools
     // dynamically reshaped sessions, so there are no per-shape buckets to cap.
     public int MaxSessionCacheEntries { get; init; } = 10;
@@ -39,6 +41,8 @@ public sealed class PaddleOcrDetectorOptions
 /// <summary>Options for the direction classifier.</summary>
 public sealed class PaddleOcrClassifierOptions
 {
+    /// <summary>Optional idle-session reclamation; null preserves the existing retention policy.</summary>
+    public OcrSessionPoolPolicy? SessionPool { get; init; }
     /// <summary>Compute backend for the classification graph. Default <see cref="OcrBackend.Auto"/>.</summary>
     public OcrBackend Backend { get; init; } = OcrBackend.Auto;
     public long MaxImagePixels { get; init; } = 40_000_000;
@@ -81,6 +85,8 @@ public readonly record struct PaddleOcrDocumentOrientationResult(uint Label, flo
 /// <summary>Options for the CTC recognizer.</summary>
 public sealed class PaddleOcrRecognizerOptions
 {
+    /// <summary>Optional idle-session reclamation; null preserves the existing retention policy.</summary>
+    public OcrSessionPoolPolicy? SessionPool { get; init; }
     /// <summary>
     /// Upper bound on pooled reusable sessions. Sessions returned while the pool
     /// is full are disposed instead of pooled, capping memory at the cost of

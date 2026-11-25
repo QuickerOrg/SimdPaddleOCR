@@ -17,6 +17,7 @@ public sealed class PaddleOcrRecognizer : IDisposable
     private readonly CompiledModel _compiled;
     private readonly bool _ownsModel;
     private readonly List<IOcrSession> _sessions = [];
+    private readonly IdleSessionPool<IOcrSession>? _idleSessions;
     private readonly object _poolLock = new();
     // Cleared the first time a GPU session reports it has fallen back to CPU
     // (emission/compile failure for this model). PaddleOcrAll reads it to stop
@@ -71,6 +72,7 @@ public sealed class PaddleOcrRecognizer : IDisposable
         {
             _options = options ?? new PaddleOcrRecognizerOptions();
             if (_options.MaxPooledSessions < 0) throw new ArgumentOutOfRangeException(nameof(options));
+            _idleSessions = IdleSessionPolicy.Create(_options.MaxPooledSessions, _options.SessionPool);
             // Not a public knob: leftover cores after LineWorkerCount, cap 4.
             // Standalone Recognizer (intraOpThreads 0) assumes one in-flight
             // session. CLS stays intra-op 1; the graph is too small to shard.
@@ -97,6 +99,7 @@ public sealed class PaddleOcrRecognizer : IDisposable
         }
         catch
         {
+            _idleSessions?.Dispose();
             if (ownsModel) _model.Dispose();
             throw;
         }
@@ -237,6 +240,7 @@ public sealed class PaddleOcrRecognizer : IDisposable
     // already paid for it.
     private IOcrSession? TryTakeBestFit(int volume)
     {
+        if (_idleSessions is not null) return _idleSessions.Take(volume);
         lock (_poolLock)
         {
             int count = _sessions.Count;
@@ -554,6 +558,7 @@ public sealed class PaddleOcrRecognizer : IDisposable
 
     private void ReturnSession(IOcrSession session)
     {
+        if (_idleSessions is not null) { _idleSessions.Return(session); return; }
         lock (_poolLock)
         {
             if (_disposed || _sessions.Count >= _options.MaxPooledSessions)
@@ -719,6 +724,7 @@ public sealed class PaddleOcrRecognizer : IDisposable
         }
         foreach (IOcrSession session in draining)
             session.Dispose();
+        _idleSessions?.Dispose();
         _compiled.Dispose();
         if (_ownsModel) _model.Dispose();
     }
