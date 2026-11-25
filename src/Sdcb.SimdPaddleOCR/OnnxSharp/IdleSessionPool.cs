@@ -120,17 +120,20 @@ internal sealed class IdleSessionPool<T> : IDisposable where T : class, IDisposa
 
 internal static class IdleSessionPolicy
 {
-    internal static IdleSessionPool<IOcrSession>? Create(int maximum, OcrSessionPoolPolicy? policy)
+    internal static IdleSessionPool<IOcrSession>? Create(int maximum, OcrSessionPoolPolicy? policy,
+        Func<string, string?>? getEnvironmentVariable = null)
     {
+        if (policy?.Enabled == false) return null;
+        getEnvironmentVariable ??= Environment.GetEnvironmentVariable;
         // 兼容现有包装层的隔离试验入口；默认不启用，不改变既有缓存行为。
-        if (policy is null && Environment.GetEnvironmentVariable("SIMD_OCR_EXPERIMENT_SESSION_IDLE_SECONDS") is { } value)
+        if (policy is null && getEnvironmentVariable("SIMD_OCR_EXPERIMENT_SESSION_IDLE_SECONDS") is { } value)
         {
             if (!double.TryParse(value, System.Globalization.NumberStyles.Float,
                 System.Globalization.CultureInfo.InvariantCulture, out double seconds) ||
                 double.IsNaN(seconds) || double.IsInfinity(seconds) || seconds <= 0)
                 throw new ArgumentException("Invalid SIMD_OCR_EXPERIMENT_SESSION_IDLE_SECONDS.");
             int keep = 1;
-            if (Environment.GetEnvironmentVariable("SIMD_OCR_EXPERIMENT_SESSION_IDLE_KEEP") is { } requested &&
+            if (getEnvironmentVariable("SIMD_OCR_EXPERIMENT_SESSION_IDLE_KEEP") is { } requested &&
                 (!int.TryParse(requested, out keep) || keep < 0))
                 throw new ArgumentException("Invalid SIMD_OCR_EXPERIMENT_SESSION_IDLE_KEEP.");
             policy = new OcrSessionPoolPolicy { IdleTimeout = TimeSpan.FromSeconds(seconds), MinimumRetainedSessions = keep };

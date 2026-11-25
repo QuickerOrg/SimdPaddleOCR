@@ -2,6 +2,8 @@
 
 新策略是可选的：默认不改变现有会话保留行为。执行并发由应用层决定；`MaxPooledSessions` 限制的是归还后最多缓存多少会话，不限制正在执行的请求数。
 
+`SessionPool = new() { Enabled = false }`可显式禁用，优先于旧实验环境变量；宿主可用它实现可靠的关闭开关。仅`SessionPool=null`时才允许读取兼容的实验变量。
+
 ## 使用方式
 
 ```csharp

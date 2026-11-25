@@ -7,6 +7,19 @@ namespace Sdcb.SimdPaddleOCR.UnitTests;
 
 public class IdleSessionPoolTests
 {
+    [Fact]
+    public void ExplicitDisableNeverConsultsLegacyEnvironment()
+    {
+        Assert.Null(IdleSessionPolicy.Create(8,new(){Enabled=false}, _=>throw new InvalidOperationException("must not read experimental settings")));
+    }
+
+    [Fact]
+    public void ExplicitEnableUsesPublicPolicyWithoutLegacyEnvironment()
+    {
+        using var pool=IdleSessionPolicy.Create(8,new(){Enabled=true}, _=>throw new InvalidOperationException("must not read experimental settings"));
+        Assert.NotNull(pool);
+    }
+
     private sealed class Resource(int size) : IDisposable
     {
         internal int Size = size, Disposals, InUse, InvalidDisposals;

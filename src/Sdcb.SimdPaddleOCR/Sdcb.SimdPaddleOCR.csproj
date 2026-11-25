@@ -20,6 +20,7 @@
   </ItemGroup>
   <!-- the engine, compiled in as internal types (adds its ns2.0 polyfill packages too) -->
   <Import Project="$(SimdOnnxRoot)src\Sdcb.SimdOnnx\Sdcb.SimdOnnx.Sources.props" />
+  <Import Project="../../quicker/QuickerVulkanCompatibility.props" />
   <!-- ns2.0: CPU only (the engine's Vector<T> / scalar tiers). -->
   <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
     <Compile Remove="Backends/**/*.cs" />

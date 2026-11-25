@@ -1,0 +1,12 @@
+<Project>
+  <PropertyGroup>
+    <QuickerVulkanCompatibility Condition="'$(QuickerVulkanCompatibility)' == ''">true</QuickerVulkanCompatibility>
+  </PropertyGroup>
+  <!-- 替换固定引擎的少量兼容文件，保留上游gitlink；不依赖开发机上的临时补丁目录。 -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0' And '$(QuickerVulkanCompatibility)' == 'true'">
+    <_QuickerVulkanSource Include="$(MSBuildThisFileDirectory)SimdOnnx\*.cs" />
+    <Compile Remove="@(_QuickerVulkanSource->'$(SimdOnnxSourceDir)Backends\Vulkan\%(Filename)%(Extension)')" />
+    <Compile Include="@(_QuickerVulkanSource)" Link="SimdOnnx\Backends\Vulkan\%(Filename)%(Extension)" />
+    <AssemblyMetadata Include="Quicker.SimdOnnxCompatibility" Value="cb80be7370f280c4ca62f1679c71f05688a66001+vulkan-memory-policy" />
+  </ItemGroup>
+</Project>
