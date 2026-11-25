@@ -22,3 +22,5 @@ dotnet build src/Sdcb.SimdPaddleOCR/Sdcb.SimdPaddleOCR.csproj -c Release -f net1
 服务端直接ProjectReference本仓库项目，与自身源码一起构建。模型包可继续引用已有的1.0.0版本。不得让服务端仍解析旧推理NuGet并在发布后手工覆盖DLL。
 
 闲置策略的API、资源所有权及共享模型边界见[会话池说明](../docs/idle-session-pool-20261124.md)。非线程安全的激活和命令状态仍按会话隔离，只读权重和兼容编译计划继续共享。
+
+宿主可用 `OcrBackendDiagnostics.GetVulkanDeviceName()` 在预热前核验所选显卡，避免依赖内部引擎反射或临时测试Controller；后端不可用时抛出异常，netstandard2.0不支持Vulkan。
